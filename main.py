@@ -109,6 +109,10 @@ def play(surface: str, bottom: str) -> None:
         if not question:
             turn -= 1
             continue
+        if len(question) > game.MAX_QUESTION_LEN:
+            print(f"  ⚠️ 问题过长（最多 {game.MAX_QUESTION_LEN} 字），请精简后重试。\n")
+            turn -= 1
+            continue
         cmd = question.lower()
         if cmd == "quit":
             print("再见。")

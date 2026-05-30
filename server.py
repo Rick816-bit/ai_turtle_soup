@@ -12,18 +12,32 @@
     GET  /api/games/{gid}            查询当前进度
 """
 
+import time
 import uuid
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import game
 
 WEB_DIR = Path(__file__).parent / "web"
+
+# 滥用防护参数
+MAX_QUESTIONS_PER_GAME = 50           # 单局最多提问数（封顶单局 token 消耗）
+MAX_GAMES_IN_MEMORY = 500             # 内存里最多保留多少游戏
+GAME_TTL_SECONDS = 24 * 3600          # 游戏存活时长
+RATE_LIMIT_WINDOW = 60                # 限流窗口（秒）
+RATE_LIMIT_MAX = 30                   # 每窗口内每 IP 最多写请求数
+
+# 按 IP 记录最近请求时间戳，用作滑动窗口限流
+_rate_log: dict[str, deque[float]] = defaultdict(deque)
+
 
 app = FastAPI(title="海龟汤 API")
 app.add_middleware(
@@ -32,6 +46,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """对所有 /api/ 下的 POST 请求按 IP 滑动窗口限流。"""
+    if request.method == "POST" and request.url.path.startswith("/api/"):
+        ip = request.client.host if request.client else "unknown"
+        # 若部署在反向代理后，尊重 X-Forwarded-For 头的第一段
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            ip = fwd.split(",")[0].strip()
+
+        now = time.time()
+        log = _rate_log[ip]
+        while log and now - log[0] > RATE_LIMIT_WINDOW:
+            log.popleft()
+        if len(log) >= RATE_LIMIT_MAX:
+            return JSONResponse(
+                {"detail": f"请求过于频繁，请稍后再试（每分钟最多 {RATE_LIMIT_MAX} 次）"},
+                status_code=429,
+            )
+        log.append(now)
+    return await call_next(request)
 
 
 @dataclass
@@ -43,19 +80,32 @@ class GameState:
     history: list[tuple[str, str]] = field(default_factory=list)
     turn: int = 0
     finished: bool = False
+    created_at: float = field(default_factory=time.time)
 
 
 games: dict[str, GameState] = {}
 
 
+def _evict_games() -> None:
+    """删除过期游戏；超出数量上限时按创建时间清理最早的。"""
+    now = time.time()
+    expired = [g for g, st in games.items() if now - st.created_at > GAME_TTL_SECONDS]
+    for g in expired:
+        games.pop(g, None)
+    if len(games) > MAX_GAMES_IN_MEMORY:
+        oldest = sorted(games.items(), key=lambda kv: kv[1].created_at)
+        for g, _ in oldest[: len(games) - MAX_GAMES_IN_MEMORY]:
+            games.pop(g, None)
+
+
 class StartGameReq(BaseModel):
     puzzle_id: int | None = None
-    surface: str | None = None
-    bottom: str | None = None
+    surface: str | None = Field(default=None, max_length=game.MAX_SURFACE_LEN)
+    bottom: str | None = Field(default=None, max_length=game.MAX_BOTTOM_LEN)
 
 
 class AskReq(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=game.MAX_QUESTION_LEN)
 
 
 @app.get("/api/puzzles")
@@ -73,8 +123,12 @@ def start_game(req: StartGameReq):
         surface, bottom = match["surface"], match["bottom"]
     elif req.surface and req.bottom:
         surface, bottom = req.surface.strip(), req.bottom.strip()
+        if not surface or not bottom:
+            raise HTTPException(400, "汤面和汤底不能为空")
     else:
         raise HTTPException(400, "需要提供 puzzle_id 或 surface+bottom")
+
+    _evict_games()
 
     try:
         key_points = game.extract_key_points(surface, bottom)
@@ -118,6 +172,10 @@ def ask(gid: str, req: AskReq):
         raise HTTPException(400, "游戏已结束")
     if not req.question.strip():
         raise HTTPException(400, "问题不能为空")
+    if state.turn >= MAX_QUESTIONS_PER_GAME:
+        raise HTTPException(
+            429, f"本局已达提问上限 ({MAX_QUESTIONS_PER_GAME})，请开新局"
+        )
 
     state.turn += 1
     try:
