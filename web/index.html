@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐢 AI 海龟汤</title>
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --card: #ffffff;
+    --text: #2a2a2a;
+    --muted: #888;
+    --accent: #2f7d6b;
+    --accent-light: #d8ebe6;
+    --border: #e5e2dc;
+    --yes: #2f7d6b;
+    --no: #c05151;
+    --maybe: #c9a04a;
+    --irrelevant: #888;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .container {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 24px 16px 80px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 28px;
+    margin: 12px 0 24px;
+    color: var(--accent);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .puzzle-list { list-style: none; padding: 0; margin: 0; }
+  .puzzle-list li {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .puzzle-list li:hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .puzzle-list .id {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 28px;
+  }
+  .actions { display: flex; gap: 10px; margin-top: 12px; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: white; color: var(--accent); border: 1px solid var(--accent); }
+  button.danger { background: var(--no); }
+
+  .surface {
+    background: #fffdf4;
+    border-left: 3px solid var(--accent);
+    padding: 14px 16px;
+    border-radius: 6px;
+    margin-bottom: 14px;
+    white-space: pre-wrap;
+  }
+  .progress-bar {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 0 16px;
+  }
+  .progress-bar > div {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.3s;
+  }
+  .progress-text {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+  .history {
+    max-height: 360px;
+    overflow-y: auto;
+    margin-bottom: 14px;
+    padding-right: 4px;
+  }
+  .qa { margin-bottom: 12px; }
+  .qa .q {
+    background: #f0ede5;
+    padding: 8px 12px;
+    border-radius: 8px 8px 8px 2px;
+    display: inline-block;
+    max-width: 90%;
+    white-space: pre-wrap;
+  }
+  .qa .a {
+    margin-top: 4px;
+    padding: 8px 12px;
+    border-radius: 8px 8px 2px 8px;
+    display: inline-block;
+    max-width: 90%;
+    color: white;
+    font-weight: 600;
+  }
+  .a.yes { background: var(--yes); }
+  .a.no { background: var(--no); }
+  .a.maybe { background: var(--maybe); }
+  .a.irrelevant { background: var(--irrelevant); }
+  .qa .a-row { text-align: right; }
+  .reveal {
+    background: var(--accent-light);
+    border: 1px dashed var(--accent);
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin: 6px 0;
+    font-size: 14px;
+  }
+  .input-row { display: flex; gap: 8px; }
+  input[type=text], textarea {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: white;
+  }
+  textarea { min-height: 80px; resize: vertical; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .points-list { padding-left: 0; list-style: none; }
+  .points-list li {
+    padding: 6px 0;
+    color: var(--muted);
+  }
+  .points-list li.found {
+    color: var(--text);
+  }
+  .points-list li.found::before { content: "✓ "; color: var(--accent); }
+  .points-list li:not(.found)::before { content: "· "; }
+  .end-banner {
+    background: var(--accent);
+    color: white;
+    padding: 14px;
+    border-radius: 8px;
+    text-align: center;
+    margin-bottom: 14px;
+    font-size: 16px;
+  }
+  .end-banner.lose { background: #888; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .loading { color: var(--muted); font-style: italic; }
+  .hidden { display: none; }
+  .custom-form label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🐢 AI 海龟汤</h1>
+
+  <!-- 选题页 -->
+  <section id="menu-view">
+    <div class="card">
+      <div class="toolbar">
+        <button id="btn-random">🎲 随机一道</button>
+        <button id="btn-custom" class="secondary">✏️ 自己出题</button>
+      </div>
+      <ul id="puzzle-list" class="puzzle-list">
+        <li class="loading">加载题库中…</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 自定义出题 -->
+  <section id="custom-view" class="hidden">
+    <div class="card custom-form">
+      <h2 style="margin-top:0">自己出题</h2>
+      <label>汤面（给玩家看的谜面）</label>
+      <textarea id="custom-surface" placeholder="..."></textarea>
+      <label>汤底（真相，玩家看不到）</label>
+      <textarea id="custom-bottom" placeholder="..."></textarea>
+      <div class="actions">
+        <button id="btn-custom-start">开始</button>
+        <button id="btn-custom-cancel" class="secondary">返回</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 游戏页 -->
+  <section id="game-view" class="hidden">
+    <div class="card">
+      <div class="surface" id="game-surface"></div>
+      <div class="progress-text" id="progress-text"></div>
+      <div class="progress-bar"><div id="progress-fill" style="width:0%"></div></div>
+
+      <div id="end-banner" class="end-banner hidden"></div>
+
+      <div class="history" id="history"></div>
+
+      <div class="input-row" id="input-row">
+        <input id="q-input" type="text" placeholder="向 AI 提问，回车发送…" autocomplete="off">
+        <button id="btn-ask">提问</button>
+      </div>
+      <div class="toolbar" style="margin-top:12px">
+        <button id="btn-giveup" class="danger">放弃，查看汤底</button>
+        <button id="btn-newgame" class="secondary">换一题</button>
+      </div>
+
+      <details style="margin-top:16px">
+        <summary class="muted">查看已揭示的要点</summary>
+        <ul class="points-list" id="points-list"></ul>
+      </details>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const views = { menu: $('#menu-view'), custom: $('#custom-view'), game: $('#game-view') };
+function show(name) {
+  for (const k in views) views[k].classList.toggle('hidden', k !== name);
+}
+
+let puzzles = [];
+let state = null;  // { game_id, surface, total, history, discovered: [{index, text}], finished }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || '请求失败');
+  }
+  return res.json();
+}
+
+async function loadPuzzles() {
+  try {
+    puzzles = await api('/api/puzzles');
+    renderPuzzleList();
+  } catch (e) {
+    $('#puzzle-list').innerHTML = `<li class="loading">加载失败：${e.message}</li>`;
+  }
+}
+
+function renderPuzzleList() {
+  const ul = $('#puzzle-list');
+  ul.innerHTML = '';
+  for (const p of puzzles) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="id">${p.id}</span><span>${p.title}</span>`;
+    li.onclick = () => startGame({ puzzle_id: p.id });
+    ul.appendChild(li);
+  }
+}
+
+async function startGame(payload) {
+  show('game');
+  $('#game-surface').textContent = '⏳ 正在分析汤底、提取关键要点…';
+  $('#history').innerHTML = '';
+  $('#end-banner').classList.add('hidden');
+  $('#points-list').innerHTML = '';
+  $('#progress-fill').style.width = '0%';
+  $('#progress-text').textContent = '';
+  $('#q-input').value = '';
+  $('#input-row').classList.remove('hidden');
+
+  try {
+    const r = await api('/api/games', { method: 'POST', body: JSON.stringify(payload) });
+    state = {
+      game_id: r.game_id,
+      surface: r.surface,
+      total: r.total_points,
+      history: [],
+      discovered: [],
+      finished: false,
+    };
+    $('#game-surface').textContent = r.surface;
+    updateProgress();
+  } catch (e) {
+    $('#game-surface').textContent = '❌ 开局失败：' + e.message;
+  }
+}
+
+function answerClass(ans) {
+  if (ans.startsWith('是也不是')) return 'maybe';
+  if (ans.startsWith('是')) return 'yes';
+  if (ans.startsWith('不是')) return 'no';
+  if (ans.startsWith('无关')) return 'irrelevant';
+  return 'irrelevant';
+}
+
+function appendQA(q, a, newly) {
+  const wrap = document.createElement('div');
+  wrap.className = 'qa';
+  wrap.innerHTML = `
+    <div><span class="q">Q: ${escapeHtml(q)}</span></div>
+    <div class="a-row"><span class="a ${answerClass(a)}">${escapeHtml(a)}</span></div>
+  `;
+  for (const item of (newly || [])) {
+    const d = document.createElement('div');
+    d.className = 'reveal';
+    d.textContent = `✨ 揭示要点 ${item.index + 1}：${item.text}`;
+    wrap.appendChild(d);
+  }
+  const h = $('#history');
+  h.appendChild(wrap);
+  h.scrollTop = h.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function updateProgress() {
+  const got = state.discovered.length;
+  const total = state.total;
+  $('#progress-text').textContent = `进度 ${got} / ${total}`;
+  $('#progress-fill').style.width = `${total ? (got / total * 100) : 0}%`;
+
+  const ul = $('#points-list');
+  ul.innerHTML = '';
+  const map = new Map(state.discovered.map(d => [d.index, d.text]));
+  for (let i = 0; i < total; i++) {
+    const li = document.createElement('li');
+    if (map.has(i)) {
+      li.className = 'found';
+      li.textContent = `[${i+1}] ${map.get(i)}`;
+    } else {
+      li.textContent = `[${i+1}] （未揭示）`;
+    }
+    ul.appendChild(li);
+  }
+}
+
+async function ask() {
+  if (!state || state.finished) return;
+  const q = $('#q-input').value.trim();
+  if (!q) return;
+  $('#q-input').value = '';
+  $('#btn-ask').disabled = true;
+  $('#q-input').disabled = true;
+
+  const placeholder = document.createElement('div');
+  placeholder.className = 'qa';
+  placeholder.innerHTML = `<div><span class="q">Q: ${escapeHtml(q)}</span></div><div class="a-row"><span class="a irrelevant">⏳ 思考中…</span></div>`;
+  $('#history').appendChild(placeholder);
+  $('#history').scrollTop = $('#history').scrollHeight;
+
+  try {
+    const r = await api(`/api/games/${state.game_id}/ask`, {
+      method: 'POST',
+      body: JSON.stringify({ question: q }),
+    });
+    placeholder.remove();
+    appendQA(q, r.answer, r.newly_discovered);
+    for (const it of r.newly_discovered) state.discovered.push(it);
+    updateProgress();
+    if (r.won) finish(r.bottom, true);
+  } catch (e) {
+    placeholder.remove();
+    appendQA(q, '⚠️ 出错：' + e.message, []);
+  } finally {
+    $('#btn-ask').disabled = false;
+    $('#q-input').disabled = false;
+    $('#q-input').focus();
+  }
+}
+
+function finish(bottom, won) {
+  state.finished = true;
+  const banner = $('#end-banner');
+  banner.classList.remove('hidden');
+  banner.classList.toggle('lose', !won);
+  banner.innerHTML = won
+    ? `🎉 恭喜！你猜出了全部要点！<br><br>【完整汤底】<br><span style="font-weight:normal">${escapeHtml(bottom)}</span>`
+    : `游戏结束。<br><br>【完整汤底】<br><span style="font-weight:normal">${escapeHtml(bottom)}</span>`;
+  $('#input-row').classList.add('hidden');
+}
+
+async function giveup() {
+  if (!state || state.finished) return;
+  if (!confirm('确定放弃这一局？')) return;
+  try {
+    const r = await api(`/api/games/${state.game_id}/giveup`, { method: 'POST' });
+    state.discovered = r.key_points
+      .filter(k => k.discovered)
+      .map(k => ({ index: k.index, text: k.text }));
+    updateProgress();
+    finish(r.bottom, false);
+  } catch (e) {
+    alert('放弃失败：' + e.message);
+  }
+}
+
+// 事件绑定
+$('#btn-random').onclick = () => {
+  if (!puzzles.length) return;
+  const p = puzzles[Math.floor(Math.random() * puzzles.length)];
+  startGame({ puzzle_id: p.id });
+};
+$('#btn-custom').onclick = () => show('custom');
+$('#btn-custom-cancel').onclick = () => show('menu');
+$('#btn-custom-start').onclick = () => {
+  const s = $('#custom-surface').value.trim();
+  const b = $('#custom-bottom').value.trim();
+  if (!s || !b) { alert('汤面和汤底都不能为空'); return; }
+  startGame({ surface: s, bottom: b });
+};
+$('#btn-ask').onclick = ask;
+$('#q-input').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+$('#btn-giveup').onclick = giveup;
+$('#btn-newgame').onclick = () => { state = null; show('menu'); };
+
+loadPuzzles();
+</script>
+</body>
+</html>
