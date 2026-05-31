@@ -96,6 +96,7 @@ def play(surface: str, bottom: str) -> None:
     print(f"\n【汤面】{surface}\n")
 
     discovered: set[int] = set()
+    discovered_summaries: dict[int, str] = {}
     history: list[tuple[str, str]] = []
     turn = 0
 
@@ -119,9 +120,9 @@ def play(surface: str, bottom: str) -> None:
             return
         if cmd == "progress":
             print(f"  进度：{len(discovered)}/{len(key_points)}")
-            for i, p in enumerate(key_points):
+            for i in range(len(key_points)):
                 mark = "✓" if i in discovered else "·"
-                shown = p if i in discovered else "（未揭示）"
+                shown = discovered_summaries.get(i, "（未揭示）") if i in discovered else "（未揭示）"
                 print(f"   {mark} [{i+1}] {shown}")
             print()
             turn -= 1
@@ -138,11 +139,14 @@ def play(surface: str, bottom: str) -> None:
 
         answer = result.get("answer", "（无）")
         newly = result.get("newly_discovered", []) or []
+        newly_summaries = result.get("newly_summaries") or {}
         print(f"  AI: {answer}")
         for idx in newly:
             if isinstance(idx, int) and 0 <= idx < len(key_points) and idx not in discovered:
                 discovered.add(idx)
-                print(f"  ✨ 揭示要点 {idx+1}/{len(key_points)}：{key_points[idx]}")
+                summary = newly_summaries.get(idx) or key_points[idx]
+                discovered_summaries[idx] = summary
+                print(f"  ✨ 揭示要点 {idx+1}/{len(key_points)}：{summary}")
         print(f"  [进度 {len(discovered)}/{len(key_points)}]\n")
         history.append((question, answer))
 

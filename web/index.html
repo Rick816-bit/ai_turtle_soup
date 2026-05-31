@@ -229,6 +229,7 @@
         <button id="btn-ask">提问</button>
       </div>
       <div class="toolbar" style="margin-top:12px">
+        <button id="btn-hint" class="secondary">💡 提示</button>
         <button id="btn-giveup" class="danger">放弃，查看汤底</button>
         <button id="btn-newgame" class="secondary">换一题</button>
       </div>
@@ -249,7 +250,7 @@ function show(name) {
 }
 
 let puzzles = [];
-let state = null;  // { game_id, surface, total, history, discovered: [{index, text}], finished }
+let state = null;  // { game_id, surface, total, history, discovered: [{index, text}], finished, max_hints, hints_left }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -303,9 +304,13 @@ async function startGame(payload) {
       history: [],
       discovered: [],
       finished: false,
+      max_hints: r.max_hints ?? 0,
+      hints_left: r.max_hints ?? 0,
     };
     $('#game-surface').textContent = r.surface;
+    $('#btn-giveup').disabled = false;
     updateProgress();
+    updateHintBtn();
   } catch (e) {
     $('#game-surface').textContent = '❌ 开局失败：' + e.message;
   }
@@ -405,6 +410,52 @@ function finish(bottom, won) {
     ? `🎉 恭喜！你猜出了全部要点！<br><br>【完整汤底】<br><span style="font-weight:normal">${escapeHtml(bottom)}</span>`
     : `游戏结束。<br><br>【完整汤底】<br><span style="font-weight:normal">${escapeHtml(bottom)}</span>`;
   $('#input-row').classList.add('hidden');
+  $('#btn-giveup').disabled = true;
+  updateHintBtn();
+}
+
+function appendReveal(item, prefix) {
+  const wrap = document.createElement('div');
+  wrap.className = 'qa';
+  const d = document.createElement('div');
+  d.className = 'reveal';
+  d.textContent = `${prefix}✨ 揭示要点 ${item.index + 1}：${item.text}`;
+  wrap.appendChild(d);
+  const h = $('#history');
+  h.appendChild(wrap);
+  h.scrollTop = h.scrollHeight;
+}
+
+function updateHintBtn() {
+  const btn = $('#btn-hint');
+  if (!state) {
+    btn.disabled = true;
+    btn.textContent = '💡 提示';
+    return;
+  }
+  const left = state.hints_left ?? 0;
+  btn.disabled = state.finished || left <= 0;
+  btn.textContent = state.max_hints ? `💡 提示 (剩 ${left})` : '💡 提示';
+}
+
+async function askHint() {
+  if (!state || state.finished) return;
+  if ((state.hints_left ?? 0) <= 0) return;
+  const btn = $('#btn-hint');
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/games/${state.game_id}/hint`, { method: 'POST' });
+    const item = { index: r.index, text: r.text };
+    state.discovered.push(item);
+    state.hints_left = r.hints_left ?? Math.max(0, (state.hints_left ?? 1) - 1);
+    appendReveal(item, '💡 ');
+    updateProgress();
+    if (r.won) finish(r.bottom, true);
+  } catch (e) {
+    alert('提示失败：' + e.message);
+  } finally {
+    updateHintBtn();
+  }
 }
 
 async function giveup() {
@@ -438,6 +489,7 @@ $('#btn-custom-start').onclick = () => {
 };
 $('#btn-ask').onclick = ask;
 $('#q-input').addEventListener('keydown', e => { if (e.key === 'Enter') ask(); });
+$('#btn-hint').onclick = askHint;
 $('#btn-giveup').onclick = giveup;
 $('#btn-newgame').onclick = () => { state = null; show('menu'); };
 

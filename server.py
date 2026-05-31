@@ -12,6 +12,7 @@
     GET  /api/games/{gid}            查询当前进度
 """
 
+import os
 import time
 import uuid
 from collections import defaultdict, deque
@@ -28,21 +29,26 @@ import game
 
 WEB_DIR = Path(__file__).parent / "web"
 
-# 滥用防护参数
-MAX_QUESTIONS_PER_GAME = 50           # 单局最多提问数（封顶单局 token 消耗）
-MAX_GAMES_IN_MEMORY = 500             # 内存里最多保留多少游戏
-GAME_TTL_SECONDS = 24 * 3600          # 游戏存活时长
-RATE_LIMIT_WINDOW = 60                # 限流窗口（秒）
-RATE_LIMIT_MAX = 30                   # 每窗口内每 IP 最多写请求数
+# 滥用防护参数（可通过环境变量覆盖）
+MAX_QUESTIONS_PER_GAME = int(os.environ.get("TURTLE_MAX_QUESTIONS_PER_GAME", "50"))
+MAX_GAMES_IN_MEMORY = int(os.environ.get("TURTLE_MAX_GAMES_IN_MEMORY", "500"))
+GAME_TTL_SECONDS = int(os.environ.get("TURTLE_GAME_TTL_SECONDS", str(24 * 3600)))
+RATE_LIMIT_WINDOW = int(os.environ.get("TURTLE_RATE_LIMIT_WINDOW", "60"))
+RATE_LIMIT_MAX = int(os.environ.get("TURTLE_RATE_LIMIT_MAX", "30"))
+MAX_HINTS_PER_GAME = int(os.environ.get("TURTLE_MAX_HINTS_PER_GAME", "3"))
 
 # 按 IP 记录最近请求时间戳，用作滑动窗口限流
 _rate_log: dict[str, deque[float]] = defaultdict(deque)
 
 
 app = FastAPI(title="海龟汤 API")
+
+# 默认不开放 CORS（前后端同源）；如需跨域，设环境变量 CORS_ALLOW_ORIGINS=https://a.com,https://b.com
+_cors_raw = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -79,6 +85,7 @@ class GameState:
     discovered: set[int] = field(default_factory=set)
     history: list[tuple[str, str]] = field(default_factory=list)
     turn: int = 0
+    hints_used: int = 0
     finished: bool = False
     created_at: float = field(default_factory=time.time)
 
@@ -96,6 +103,12 @@ def _evict_games() -> None:
         oldest = sorted(games.items(), key=lambda kv: kv[1].created_at)
         for g, _ in oldest[: len(games) - MAX_GAMES_IN_MEMORY]:
             games.pop(g, None)
+
+
+def _maybe_finish(state: GameState) -> None:
+    """所有要点都已揭示 → 结束游戏。ask / hint 走完后都调一次。"""
+    if len(state.discovered) >= len(state.key_points):
+        state.finished = True
 
 
 class StartGameReq(BaseModel):
@@ -141,6 +154,7 @@ def start_game(req: StartGameReq):
         "game_id": gid,
         "surface": surface,
         "total_points": len(key_points),
+        "max_hints": MAX_HINTS_PER_GAME,
     }
 
 
@@ -189,21 +203,62 @@ def ask(gid: str, req: AskReq):
 
     answer = result.get("answer", "（无）")
     newly_idx = result.get("newly_discovered", []) or []
+    newly_summaries = result.get("newly_summaries") or {}
     newly_items = []
     for idx in newly_idx:
         if isinstance(idx, int) and 0 <= idx < len(state.key_points) and idx not in state.discovered:
             state.discovered.add(idx)
-            newly_items.append({"index": idx, "text": state.key_points[idx]})
+            summary = newly_summaries.get(idx) or state.key_points[idx]
+            newly_items.append({"index": idx, "text": summary})
 
     state.history.append((req.question, answer))
-    if len(state.discovered) >= len(state.key_points):
-        state.finished = True
+    _maybe_finish(state)
 
     return {
         "turn": state.turn,
         "answer": answer,
         "newly_discovered": newly_items,
         "progress": [len(state.discovered), len(state.key_points)],
+        "won": state.finished,
+        "bottom": state.bottom if state.finished else None,
+    }
+
+
+@app.post("/api/games/{gid}/hint")
+def hint(gid: str):
+    """揭示一个未揭示的要点（消耗一次提示次数）。"""
+    state = games.get(gid)
+    if not state:
+        raise HTTPException(404, "游戏不存在")
+    if state.finished:
+        raise HTTPException(400, "游戏已结束")
+    if state.hints_used >= MAX_HINTS_PER_GAME:
+        raise HTTPException(
+            429, f"本局提示次数已用完（上限 {MAX_HINTS_PER_GAME}）"
+        )
+
+    undiscovered = [i for i in range(len(state.key_points)) if i not in state.discovered]
+    if not undiscovered:
+        _maybe_finish(state)
+        raise HTTPException(400, "已无可揭示要点")
+
+    idx = undiscovered[0]
+    try:
+        summary = game.summarize_point(
+            state.surface, state.bottom, state.key_points, idx
+        )
+    except Exception:
+        summary = state.key_points[idx]
+
+    state.discovered.add(idx)
+    state.hints_used += 1
+    _maybe_finish(state)
+
+    return {
+        "index": idx,
+        "text": summary,
+        "progress": [len(state.discovered), len(state.key_points)],
+        "hints_left": MAX_HINTS_PER_GAME - state.hints_used,
         "won": state.finished,
         "bottom": state.bottom if state.finished else None,
     }
@@ -230,7 +285,15 @@ if WEB_DIR.exists():
 
 
 if __name__ == "__main__":
-      import os, uvicorn
-      game.load_dotenv()
-      port = int(os.environ.get("PORT", 8000))
-      uvicorn.run(app, host="0.0.0.0", port=port)
+    import sys
+
+    import uvicorn
+
+    game.load_dotenv()
+    try:
+        game.get_client()
+    except RuntimeError as e:
+        print(f"启动失败：{e}", file=sys.stderr)
+        sys.exit(1)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
