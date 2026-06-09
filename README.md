@@ -61,14 +61,3 @@ turtle_soup/
 | GET | `/api/games/{gid}` | 查询当前进度 |
 | POST | `/api/games/{gid}/ask` | 提问，body `{question}` |
 | POST | `/api/games/{gid}/giveup` | 弃权看汤底 |
-
-## 后续可做的事（如果要正式上线）
-
-- 当前 web 版的游戏状态存在**内存**里，服务器重启会丢；正式用需要换 Redis 或 SQLite
-- 没有用户系统、没有速率限制，部署到公网前一定要加 —— 否则任何人都能消耗你的 DeepSeek 额度
-- 部署：FastAPI 可直接打包到 Render / Railway / Fly.io；前端是纯静态，跟后端同源不用额外处理
-- 想要桌面 app：在此基础上用 Tauri 或 Electron 套壳即可
-
-## 注意
-
-API key 写在服务器端 `.env`，不会下发到浏览器。不过本地 demo 没有任何 auth，请勿暴露到公网。
