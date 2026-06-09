@@ -8,6 +8,7 @@
     GET  /api/puzzles                列出题库（仅 id + title）
     POST /api/games                  开局
     POST /api/games/{gid}/ask        提问
+    POST /api/games/{gid}/hint       获取提示
     POST /api/games/{gid}/giveup     弃权看汤底
     GET  /api/games/{gid}            查询当前进度
 """
@@ -36,6 +37,11 @@ GAME_TTL_SECONDS = int(os.environ.get("TURTLE_GAME_TTL_SECONDS", str(24 * 3600))
 RATE_LIMIT_WINDOW = int(os.environ.get("TURTLE_RATE_LIMIT_WINDOW", "60"))
 RATE_LIMIT_MAX = int(os.environ.get("TURTLE_RATE_LIMIT_MAX", "30"))
 MAX_HINTS_PER_GAME = int(os.environ.get("TURTLE_MAX_HINTS_PER_GAME", "3"))
+TRUST_X_FORWARDED_FOR = os.environ.get("TRUST_X_FORWARDED_FOR", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # 按 IP 记录最近请求时间戳，用作滑动窗口限流
 _rate_log: dict[str, deque[float]] = defaultdict(deque)
@@ -59,8 +65,8 @@ async def rate_limit(request: Request, call_next):
     """对所有 /api/ 下的 POST 请求按 IP 滑动窗口限流。"""
     if request.method == "POST" and request.url.path.startswith("/api/"):
         ip = request.client.host if request.client else "unknown"
-        # 若部署在反向代理后，尊重 X-Forwarded-For 头的第一段
-        fwd = request.headers.get("x-forwarded-for")
+        # 只有明确处在可信反向代理后，才使用 X-Forwarded-For。
+        fwd = request.headers.get("x-forwarded-for") if TRUST_X_FORWARDED_FOR else None
         if fwd:
             ip = fwd.split(",")[0].strip()
 
@@ -83,6 +89,7 @@ class GameState:
     bottom: str
     key_points: list[str]
     discovered: set[int] = field(default_factory=set)
+    discovered_summaries: dict[int, str] = field(default_factory=dict)
     history: list[tuple[str, str]] = field(default_factory=list)
     turn: int = 0
     hints_used: int = 0
@@ -106,9 +113,17 @@ def _evict_games() -> None:
 
 
 def _maybe_finish(state: GameState) -> None:
-    """所有要点都已揭示 → 结束游戏。ask / hint 走完后都调一次。"""
+    """所有要点都已揭示 → 结束游戏。"""
     if len(state.discovered) >= len(state.key_points):
         state.finished = True
+
+
+def _get_state(gid: str) -> GameState:
+    _evict_games()
+    state = games.get(gid)
+    if not state:
+        raise HTTPException(404, "游戏不存在")
+    return state
 
 
 class StartGameReq(BaseModel):
@@ -123,11 +138,23 @@ class AskReq(BaseModel):
 
 @app.get("/api/puzzles")
 def list_puzzles():
-    return [{"id": p["id"], "title": p["title"]} for p in game.load_puzzles()]
+    puzzles = []
+    for p in game.load_puzzles():
+        puzzles.append(
+            {
+                "id": p["id"],
+                "title": p["title"],
+                "category": p.get("category", "未分类"),
+                "difficulty": p.get("difficulty", "未知"),
+                "tags": p.get("tags", []),
+            }
+        )
+    return puzzles
 
 
 @app.post("/api/games")
 def start_game(req: StartGameReq):
+    match = None
     if req.puzzle_id is not None:
         puzzles = game.load_puzzles()
         match = next((p for p in puzzles if p["id"] == req.puzzle_id), None)
@@ -143,16 +170,20 @@ def start_game(req: StartGameReq):
 
     _evict_games()
 
-    try:
-        key_points = game.extract_key_points(surface, bottom)
-    except Exception as e:
-        raise HTTPException(500, f"提取要点失败：{e}")
+    key_points = game.normalize_key_points(match.get("key_points")) if match else []
+    if not key_points:
+        try:
+            key_points = game.extract_key_points(surface, bottom)
+        except Exception as e:
+            raise HTTPException(500, f"提取要点失败：{e}")
 
-    gid = uuid.uuid4().hex[:8]
+    gid = uuid.uuid4().hex
     games[gid] = GameState(surface=surface, bottom=bottom, key_points=key_points)
     return {
         "game_id": gid,
         "surface": surface,
+        "category": match.get("category") if match else "自定义",
+        "difficulty": match.get("difficulty") if match else "自定义",
         "total_points": len(key_points),
         "max_hints": MAX_HINTS_PER_GAME,
     }
@@ -160,9 +191,7 @@ def start_game(req: StartGameReq):
 
 @app.get("/api/games/{gid}")
 def get_game(gid: str):
-    state = games.get(gid)
-    if not state:
-        raise HTTPException(404, "游戏不存在")
+    state = _get_state(gid)
     return {
         "game_id": gid,
         "surface": state.surface,
@@ -171,7 +200,11 @@ def get_game(gid: str):
         "finished": state.finished,
         "history": [{"q": q, "a": a} for q, a in state.history],
         "discovered": [
-            {"index": i, "text": state.key_points[i]} for i in sorted(state.discovered)
+            {
+                "index": i,
+                "text": state.discovered_summaries.get(i, state.key_points[i]),
+            }
+            for i in sorted(state.discovered)
         ],
         "bottom": state.bottom if state.finished else None,
     }
@@ -179,9 +212,7 @@ def get_game(gid: str):
 
 @app.post("/api/games/{gid}/ask")
 def ask(gid: str, req: AskReq):
-    state = games.get(gid)
-    if not state:
-        raise HTTPException(404, "游戏不存在")
+    state = _get_state(gid)
     if state.finished:
         raise HTTPException(400, "游戏已结束")
     if not req.question.strip():
@@ -209,6 +240,7 @@ def ask(gid: str, req: AskReq):
         if isinstance(idx, int) and 0 <= idx < len(state.key_points) and idx not in state.discovered:
             state.discovered.add(idx)
             summary = newly_summaries.get(idx) or state.key_points[idx]
+            state.discovered_summaries[idx] = summary
             newly_items.append({"index": idx, "text": summary})
 
     state.history.append((req.question, answer))
@@ -226,10 +258,8 @@ def ask(gid: str, req: AskReq):
 
 @app.post("/api/games/{gid}/hint")
 def hint(gid: str):
-    """揭示一个未揭示的要点（消耗一次提示次数）。"""
-    state = games.get(gid)
-    if not state:
-        raise HTTPException(404, "游戏不存在")
+    """给出一个未揭示要点的方向提示（不直接计入进度）。"""
+    state = _get_state(gid)
     if state.finished:
         raise HTTPException(400, "游戏已结束")
     if state.hints_used >= MAX_HINTS_PER_GAME:
@@ -240,7 +270,7 @@ def hint(gid: str):
     undiscovered = [i for i in range(len(state.key_points)) if i not in state.discovered]
     if not undiscovered:
         _maybe_finish(state)
-        raise HTTPException(400, "已无可揭示要点")
+        raise HTTPException(400, "已无可提示要点")
 
     idx = undiscovered[0]
     try:
@@ -250,9 +280,7 @@ def hint(gid: str):
     except Exception:
         summary = state.key_points[idx]
 
-    state.discovered.add(idx)
     state.hints_used += 1
-    _maybe_finish(state)
 
     return {
         "index": idx,
@@ -260,15 +288,12 @@ def hint(gid: str):
         "progress": [len(state.discovered), len(state.key_points)],
         "hints_left": MAX_HINTS_PER_GAME - state.hints_used,
         "won": state.finished,
-        "bottom": state.bottom if state.finished else None,
     }
 
 
 @app.post("/api/games/{gid}/giveup")
 def giveup(gid: str):
-    state = games.get(gid)
-    if not state:
-        raise HTTPException(404, "游戏不存在")
+    state = _get_state(gid)
     state.finished = True
     return {
         "bottom": state.bottom,
@@ -293,7 +318,6 @@ if __name__ == "__main__":
     try:
         game.get_client()
     except RuntimeError as e:
-        print(f"启动失败：{e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"提示：{e}；题库页面仍可打开，提问和自定义出题需要 API key。", file=sys.stderr)
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

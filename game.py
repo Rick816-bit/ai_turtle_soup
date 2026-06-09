@@ -31,7 +31,26 @@ load_dotenv()
 
 
 def save_to_dotenv(key: str, value: str) -> None:
-    ENV_FILE.write_text(f"{key}={value}\n", encoding="utf-8")
+    """更新或追加 .env 中的单个 key，保留已有的其他配置。"""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise ValueError(f"非法环境变量名：{key}")
+
+    new_line = f"{key}={value.strip()}"
+    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
+    updated: list[str] = []
+    found = False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#") and "=" in raw:
+            existing_key = raw.partition("=")[0].strip()
+            if existing_key == key:
+                updated.append(new_line)
+                found = True
+                continue
+        updated.append(raw)
+    if not found:
+        updated.append(new_line)
+    ENV_FILE.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
 
 
 # 可通过环境变量覆盖
@@ -118,6 +137,42 @@ def _chat_json(prompt: str) -> dict:
         return _parse_json(_ask_text(retry_prompt))
 
 
+def normalize_key_points(raw, max_points: int = 8) -> list[str]:
+    """把模型或题库里的 key_points 规整为非空字符串列表。"""
+    if not isinstance(raw, list):
+        return []
+
+    points: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = re.sub(r"\s+", " ", item).strip()
+        if not text or text in seen:
+            continue
+        points.append(text)
+        seen.add(text)
+        if len(points) >= max_points:
+            break
+    return points
+
+
+def _fallback_hint(point: str) -> str:
+    """模型不可用时给一个粗粒度方向，避免直接暴露完整要点。"""
+    rules = [
+        (("身份", "不是", "真人", "司机", "顾客", "学生"), "关注人物身份或角色"),
+        (("时间", "时区", "闹钟", "午夜"), "关注时间基准"),
+        (("声音", "电台", "信号", "冲水", "提示音"), "关注声音来源"),
+        (("按钮", "电梯", "灯塔", "飞刀", "钥匙"), "关注道具或装置"),
+        (("误认", "误以为", "看错", "错杀"), "关注一次误判"),
+        (("保护", "救", "帮忙", "引导"), "关注行为动机"),
+    ]
+    for keywords, hint in rules:
+        if any(k in point for k in keywords):
+            return hint
+    return "换个角度看故事前提"
+
+
 def _sanitize_answer(raw) -> str:
     """把模型 answer 强制规整到 ALLOWED_ANSWERS 之一。
 
@@ -151,7 +206,11 @@ def extract_key_points(soup_surface: str, soup_bottom: str) -> list[str]:
 - 一般 3~6 条，太多会让游戏拖沓
 
 只返回 JSON：{{"key_points": ["要点1", "要点2", ...]}}"""
-    return _chat_json(prompt)["key_points"]
+    result = _chat_json(prompt)
+    key_points = normalize_key_points(result.get("key_points"))
+    if not key_points:
+        raise ValueError("模型没有返回有效关键要点")
+    return key_points
 
 
 def judge(
@@ -236,7 +295,7 @@ def summarize_point(
     key_points: list[str],
     point_index: int,
 ) -> str:
-    """为单个要点生成一句 ≤ 30 字的无剧透复述，用于 hint 接口。
+    """为单个要点生成一句 ≤ 30 字的方向提示，用于 hint 接口。
 
     出错时回退到 key_points[point_index] 原文。
     """
@@ -246,7 +305,7 @@ def summarize_point(
     other_points = "\n".join(
         f"  [{i}] {p}" for i, p in enumerate(key_points) if i != point_index
     ) or "（无其他要点）"
-    prompt = f"""你是海龟汤主持人。玩家请求一个【提示】，请把指定的关键要点改写成一句给玩家的"提示"。
+    prompt = f"""你是海龟汤主持人。玩家请求一个【提示】，请根据指定关键要点写一句方向提示。
 
 【汤面】（玩家已知）
 {soup_surface}
@@ -262,14 +321,15 @@ def summarize_point(
 
 要求：
 - 一句中文短句，≤ 30 字
-- 仅复述【目标要点】本身，禁止引用其他要点、禁止透露汤底中目标要点未覆盖的细节
+- 给方向，不要直接完整揭开【目标要点】
+- 禁止引用其他要点，禁止透露汤底中目标要点未覆盖的细节
 - 直接输出该句，不要加引号、不要加"提示："等前缀
 
 只返回 JSON：{{"summary": "..."}}"""
     try:
         result = _chat_json(prompt)
     except Exception:
-        return target
+        return _fallback_hint(target)
     s = result.get("summary")
     if isinstance(s, str) and s.strip():
         return s.strip()[:30]

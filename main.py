@@ -46,7 +46,7 @@ def read_multiline(prompt: str) -> str:
     return "\n".join(lines).strip()
 
 
-def select_puzzle(puzzles: list[dict]) -> tuple[str, str]:
+def select_puzzle(puzzles: list[dict]) -> tuple[str, str, list[str] | None]:
     print("\n📚 题库：")
     for p in puzzles:
         print(f"  [{p['id']:>2}] {p['title']}")
@@ -63,13 +63,13 @@ def select_puzzle(puzzles: list[dict]) -> tuple[str, str]:
         if choice == "r":
             p = random.choice(puzzles)
             print(f"🎲 随机选中：[{p['id']}] {p['title']}")
-            return p["surface"], p["bottom"]
+            return p["surface"], p["bottom"], game.normalize_key_points(p.get("key_points"))
         if choice == "0":
             surface = read_multiline("请输入【汤面】:")
             print()
             bottom = read_multiline("请输入【汤底】:")
             if surface and bottom:
-                return surface, bottom
+                return surface, bottom, None
             print("汤面和汤底都不能为空，请重新选择。")
             continue
         try:
@@ -80,13 +80,16 @@ def select_puzzle(puzzles: list[dict]) -> tuple[str, str]:
         for p in puzzles:
             if p["id"] == n:
                 print(f"已选择：[{p['id']}] {p['title']}")
-                return p["surface"], p["bottom"]
+                return p["surface"], p["bottom"], game.normalize_key_points(p.get("key_points"))
         print("编号不存在，请重选。")
 
 
-def play(surface: str, bottom: str) -> None:
-    print("\n正在分析汤底、提取关键要点……\n")
-    key_points = game.extract_key_points(surface, bottom)
+def play(surface: str, bottom: str, key_points: list[str] | None = None) -> None:
+    if key_points:
+        print("\n正在读取题库关键要点……\n")
+    else:
+        print("\n正在分析汤底、提取关键要点……\n")
+        key_points = game.extract_key_points(surface, bottom)
 
     print(f"本局共 {len(key_points)} 个要点待揭示。")
     print("=" * 60)
@@ -168,18 +171,19 @@ def main() -> None:
 
     puzzles = game.load_puzzles()
     if puzzles:
-        surface, bottom = select_puzzle(puzzles)
+        surface, bottom, key_points = select_puzzle(puzzles)
     else:
         print("（未找到 puzzles.json，进入自定义模式）\n")
         surface = read_multiline("请输入【汤面】:")
         print()
         bottom = read_multiline("请输入【汤底】:")
+        key_points = None
 
     if not surface or not bottom:
         print("汤面和汤底都不能为空。", file=sys.stderr)
         sys.exit(1)
 
-    play(surface, bottom)
+    play(surface, bottom, key_points)
 
 
 if __name__ == "__main__":

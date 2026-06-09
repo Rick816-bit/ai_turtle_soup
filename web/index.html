@@ -6,17 +6,20 @@
 <title>🐢 AI 海龟汤</title>
 <style>
   :root {
-    --bg: #f7f5f0;
+    --bg: #f4f7fb;
     --card: #ffffff;
-    --text: #2a2a2a;
-    --muted: #888;
-    --accent: #2f7d6b;
-    --accent-light: #d8ebe6;
-    --border: #e5e2dc;
-    --yes: #2f7d6b;
-    --no: #c05151;
-    --maybe: #c9a04a;
-    --irrelevant: #888;
+    --text: #24303a;
+    --muted: #6d7782;
+    --accent: #256d85;
+    --accent-strong: #18546a;
+    --accent-light: #e3f3f7;
+    --border: #d9e2ea;
+    --soft: #eef3f7;
+    --note: #fff7df;
+    --yes: #24755f;
+    --no: #b84a54;
+    --maybe: #b8862f;
+    --irrelevant: #6d7782;
   }
   * { box-sizing: border-box; }
   body {
@@ -40,9 +43,37 @@
   .card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 8px;
     padding: 20px;
     margin-bottom: 16px;
+  }
+  .menu-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .menu-head h2 {
+    margin: 0;
+    font-size: 18px;
+  }
+  .category-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .category-tabs button {
+    background: var(--soft);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 7px 12px;
+  }
+  .category-tabs button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
   }
   .puzzle-list { list-style: none; padding: 0; margin: 0; }
   .puzzle-list li {
@@ -52,9 +83,8 @@
     margin-bottom: 8px;
     cursor: pointer;
     transition: all 0.15s;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: grid;
+    gap: 6px;
   }
   .puzzle-list li:hover {
     border-color: var(--accent);
@@ -64,6 +94,38 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
     min-width: 28px;
+  }
+  .puzzle-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .puzzle-title span:last-child {
+    overflow-wrap: anywhere;
+  }
+  .puzzle-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-left: 38px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--soft);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 7px;
+  }
+  .badge.category {
+    background: var(--accent-light);
+    color: var(--accent-strong);
+    border-color: #b9dce6;
   }
   .actions { display: flex; gap: 10px; margin-top: 12px; }
   button {
@@ -82,7 +144,7 @@
   button.danger { background: var(--no); }
 
   .surface {
-    background: #fffdf4;
+    background: var(--note);
     border-left: 3px solid var(--accent);
     padding: 14px 16px;
     border-radius: 6px;
@@ -114,7 +176,7 @@
   }
   .qa { margin-bottom: 12px; }
   .qa .q {
-    background: #f0ede5;
+    background: var(--soft);
     padding: 8px 12px;
     border-radius: 8px 8px 8px 2px;
     display: inline-block;
@@ -179,6 +241,11 @@
   .loading { color: var(--muted); font-style: italic; }
   .hidden { display: none; }
   .custom-form label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  @media (max-width: 560px) {
+    .menu-head { display: block; }
+    .actions, .input-row { flex-direction: column; }
+    .puzzle-meta { padding-left: 0; }
+  }
 </style>
 </head>
 <body>
@@ -188,6 +255,11 @@
   <!-- 选题页 -->
   <section id="menu-view">
     <div class="card">
+      <div class="menu-head">
+        <h2>选择题目</h2>
+        <div id="menu-count" class="muted"></div>
+      </div>
+      <div id="category-tabs" class="category-tabs"></div>
       <div class="toolbar">
         <button id="btn-random">🎲 随机一道</button>
         <button id="btn-custom" class="secondary">✏️ 自己出题</button>
@@ -225,7 +297,7 @@
       <div class="history" id="history"></div>
 
       <div class="input-row" id="input-row">
-        <input id="q-input" type="text" placeholder="向 AI 提问，回车发送…" autocomplete="off">
+        <input id="q-input" type="text" placeholder="向 AI 提问…" autocomplete="off">
         <button id="btn-ask">提问</button>
       </div>
       <div class="toolbar" style="margin-top:12px">
@@ -251,6 +323,8 @@ function show(name) {
 
 let puzzles = [];
 let state = null;  // { game_id, surface, total, history, discovered: [{index, text}], finished, max_hints, hints_left }
+let activeCategory = '全部';
+const CATEGORY_ORDER = ['全部', '经典推理', '清汤日常', '犯罪悬疑', '惊悚怪谈', '职业机关', '身份错位', '未分类'];
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -267,18 +341,90 @@ async function api(path, opts = {}) {
 async function loadPuzzles() {
   try {
     puzzles = await api('/api/puzzles');
+    renderCategories();
     renderPuzzleList();
   } catch (e) {
-    $('#puzzle-list').innerHTML = `<li class="loading">加载失败：${e.message}</li>`;
+    setPuzzleListMessage('加载失败：' + e.message);
+  }
+}
+
+function setPuzzleListMessage(text) {
+  const ul = $('#puzzle-list');
+  ul.innerHTML = '';
+  const li = document.createElement('li');
+  li.className = 'loading';
+  li.textContent = text;
+  ul.appendChild(li);
+  $('#menu-count').textContent = '';
+}
+
+function categories() {
+  const found = new Set(puzzles.map(p => p.category || '未分类'));
+  const ordered = CATEGORY_ORDER.filter(c => c === '全部' || found.has(c));
+  const extras = [...found].filter(c => !ordered.includes(c)).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  return [...ordered, ...extras];
+}
+
+function filteredPuzzles() {
+  if (activeCategory === '全部') return puzzles;
+  return puzzles.filter(p => (p.category || '未分类') === activeCategory);
+}
+
+function renderCategories() {
+  const wrap = $('#category-tabs');
+  wrap.innerHTML = '';
+  for (const cat of categories()) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = cat === activeCategory ? 'active' : '';
+    const count = cat === '全部' ? puzzles.length : puzzles.filter(p => (p.category || '未分类') === cat).length;
+    btn.textContent = `${cat} ${count}`;
+    btn.onclick = () => {
+      activeCategory = cat;
+      renderCategories();
+      renderPuzzleList();
+    };
+    wrap.appendChild(btn);
   }
 }
 
 function renderPuzzleList() {
   const ul = $('#puzzle-list');
   ul.innerHTML = '';
-  for (const p of puzzles) {
+  const visible = filteredPuzzles();
+  $('#menu-count').textContent = `${visible.length} / ${puzzles.length} 题`;
+  if (!visible.length) {
+    setPuzzleListMessage('这个分类暂时没有题目');
+    return;
+  }
+  for (const p of visible) {
     const li = document.createElement('li');
-    li.innerHTML = `<span class="id">${p.id}</span><span>${p.title}</span>`;
+    const title = document.createElement('div');
+    title.className = 'puzzle-title';
+    const id = document.createElement('span');
+    id.className = 'id';
+    id.textContent = String(p.id);
+    const name = document.createElement('span');
+    name.textContent = p.title;
+    title.append(id, name);
+
+    const meta = document.createElement('div');
+    meta.className = 'puzzle-meta';
+    const category = document.createElement('span');
+    category.className = 'badge category';
+    category.textContent = p.category || '未分类';
+    const difficulty = document.createElement('span');
+    difficulty.className = 'badge';
+    difficulty.textContent = p.difficulty || '未知';
+    meta.append(category, difficulty);
+    for (const tag of (p.tags || []).slice(0, 3)) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = tag;
+      meta.appendChild(badge);
+    }
+
+    li.append(title, meta);
     li.onclick = () => startGame({ puzzle_id: p.id });
     ul.appendChild(li);
   }
@@ -286,6 +432,7 @@ function renderPuzzleList() {
 
 async function startGame(payload) {
   show('game');
+  state = null;
   $('#game-surface').textContent = '⏳ 正在分析汤底、提取关键要点…';
   $('#history').innerHTML = '';
   $('#end-banner').classList.add('hidden');
@@ -294,12 +441,15 @@ async function startGame(payload) {
   $('#progress-text').textContent = '';
   $('#q-input').value = '';
   $('#input-row').classList.remove('hidden');
+  setGameControls(false);
 
   try {
     const r = await api('/api/games', { method: 'POST', body: JSON.stringify(payload) });
     state = {
       game_id: r.game_id,
       surface: r.surface,
+      category: r.category,
+      difficulty: r.difficulty,
       total: r.total_points,
       history: [],
       discovered: [],
@@ -308,12 +458,20 @@ async function startGame(payload) {
       hints_left: r.max_hints ?? 0,
     };
     $('#game-surface').textContent = r.surface;
-    $('#btn-giveup').disabled = false;
+    setGameControls(true);
     updateProgress();
     updateHintBtn();
   } catch (e) {
     $('#game-surface').textContent = '❌ 开局失败：' + e.message;
+    setGameControls(false);
   }
+}
+
+function setGameControls(enabled) {
+  $('#btn-ask').disabled = !enabled;
+  $('#q-input').disabled = !enabled;
+  $('#btn-giveup').disabled = !enabled;
+  $('#btn-hint').disabled = !enabled;
 }
 
 function answerClass(ans) {
@@ -414,12 +572,12 @@ function finish(bottom, won) {
   updateHintBtn();
 }
 
-function appendReveal(item, prefix) {
+function appendHint(text) {
   const wrap = document.createElement('div');
   wrap.className = 'qa';
   const d = document.createElement('div');
   d.className = 'reveal';
-  d.textContent = `${prefix}✨ 揭示要点 ${item.index + 1}：${item.text}`;
+  d.textContent = `💡 ${text}`;
   wrap.appendChild(d);
   const h = $('#history');
   h.appendChild(wrap);
@@ -445,12 +603,8 @@ async function askHint() {
   btn.disabled = true;
   try {
     const r = await api(`/api/games/${state.game_id}/hint`, { method: 'POST' });
-    const item = { index: r.index, text: r.text };
-    state.discovered.push(item);
     state.hints_left = r.hints_left ?? Math.max(0, (state.hints_left ?? 1) - 1);
-    appendReveal(item, '💡 ');
-    updateProgress();
-    if (r.won) finish(r.bottom, true);
+    appendHint(r.text);
   } catch (e) {
     alert('提示失败：' + e.message);
   } finally {
@@ -475,8 +629,9 @@ async function giveup() {
 
 // 事件绑定
 $('#btn-random').onclick = () => {
-  if (!puzzles.length) return;
-  const p = puzzles[Math.floor(Math.random() * puzzles.length)];
+  const pool = filteredPuzzles();
+  if (!pool.length) return;
+  const p = pool[Math.floor(Math.random() * pool.length)];
   startGame({ puzzle_id: p.id });
 };
 $('#btn-custom').onclick = () => show('custom');
